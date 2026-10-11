@@ -1,0 +1,23 @@
+[project]
+name = "reminder-bot"
+version = "0.1.0"
+description = "アバウトな日本語で登録できる Discord リマインダーBot"
+requires-python = ">=3.12"
+dependencies = [
+    "discord.py>=2.4,<3",
+    "tzdata",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
