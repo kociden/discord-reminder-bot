@@ -1,0 +1,16 @@
+services:
+  reminder-bot:
+    build: .
+    container_name: discord-reminder-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TZ=Asia/Tokyo
+      - DB_PATH=/data/reminder.db
+    volumes:
+      - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
