@@ -1,6 +1,7 @@
+# GitHub の main に push → Actions がイメージを作成 → watchtower が5分以内に自動更新
 services:
   reminder-bot:
-    build: .
+    image: ghcr.io/kociden/discord-reminder-bot:latest
     container_name: discord-reminder-bot
     restart: unless-stopped
     env_file: .env
@@ -9,8 +10,22 @@ services:
       - DB_PATH=/data/reminder.db
     volumes:
       - ./data:/data
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
     logging:
       driver: json-file
       options:
         max-size: "5m"
         max-file: "3"
+
+  watchtower:
+    image: nickfedor/watchtower:1.22.3
+    container_name: reminder-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - TZ=Asia/Tokyo
+      - WATCHTOWER_LABEL_ENABLE=true   # 上の reminder-bot だけを更新対象にする
+      - WATCHTOWER_POLL_INTERVAL=300
+      - WATCHTOWER_CLEANUP=true
