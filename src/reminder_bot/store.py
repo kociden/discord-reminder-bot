@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, time, timedelta
 
-from .models import Recurrence, Reminder
+from .models import Nag, Recurrence, Reminder
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS reminders (
@@ -29,6 +29,21 @@ CREATE TABLE IF NOT EXISTS aliases (
     word TEXT PRIMARY KEY,
     hh INTEGER NOT NULL,
     mm INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS nags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reminder_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    next_at TEXT NOT NULL,
+    sent INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_nags_due ON nags (active, next_at);
+CREATE TABLE IF NOT EXISTS nag_messages (
+    message_id INTEGER PRIMARY KEY,
+    nag_id INTEGER NOT NULL
 );
 """
 
@@ -113,6 +128,52 @@ class Store:
     def deactivate(self, rid: int, user_id: int) -> bool:
         cur = self._db.execute(
             "UPDATE reminders SET active = 0 WHERE id = ? AND user_id = ? AND active = 1", (rid, user_id)
+        )
+        self._db.execute("UPDATE nags SET active = 0 WHERE reminder_id = ? AND user_id = ?", (rid, user_id))
+        self._db.commit()
+        return cur.rowcount > 0
+
+    # ---------- 再通知 ----------
+
+    def start_nag(self, reminder_id: int, user_id: int, channel_id: int, content: str,
+                  message_id: int, next_at: datetime) -> int:
+        """通知メッセージを送った後に呼ぶ。同じリマインダーの古い再通知は止める。"""
+        self._db.execute("UPDATE nags SET active = 0 WHERE reminder_id = ?", (reminder_id,))
+        cur = self._db.execute(
+            "INSERT INTO nags (reminder_id, user_id, channel_id, content, next_at) VALUES (?,?,?,?,?)",
+            (reminder_id, user_id, channel_id, content, _iso(next_at)),
+        )
+        self._db.execute("INSERT OR REPLACE INTO nag_messages VALUES (?,?)", (message_id, cur.lastrowid))
+        self._db.commit()
+        return cur.lastrowid
+
+    def add_nag_message(self, nag_id: int, message_id: int) -> None:
+        self._db.execute("INSERT OR REPLACE INTO nag_messages VALUES (?,?)", (message_id, nag_id))
+        self._db.commit()
+
+    def due_nags(self, now: datetime) -> list[Nag]:
+        rows = self._db.execute(
+            "SELECT * FROM nags WHERE active = 1 AND next_at <= ? ORDER BY next_at", (_iso(now),)
+        )
+        return [
+            Nag(r["reminder_id"], r["user_id"], r["channel_id"], r["content"], _dt(r["next_at"]), r["sent"], r["id"])
+            for r in rows
+        ]
+
+    def update_nag(self, nag_id: int, next_at: datetime | None, sent: int) -> None:
+        if next_at is None:
+            self._db.execute("UPDATE nags SET active = 0, sent = ? WHERE id = ?", (sent, nag_id))
+        else:
+            self._db.execute("UPDATE nags SET next_at = ?, sent = ? WHERE id = ?", (_iso(next_at), sent, nag_id))
+        self._db.commit()
+
+    def ack_message(self, message_id: int, user_id: int) -> bool:
+        """通知メッセージへのリアクションで再通知を止める。止めたら True。"""
+        cur = self._db.execute(
+            """UPDATE nags SET active = 0
+               WHERE active = 1 AND user_id = ?
+                 AND id = (SELECT nag_id FROM nag_messages WHERE message_id = ?)""",
+            (user_id, message_id),
         )
         self._db.commit()
         return cur.rowcount > 0

@@ -9,10 +9,10 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
-from .formatting import HELP_TEXT, format_confirm, format_list, format_notification, format_registered
+from .formatting import HELP_TEXT, format_confirm, format_list, format_nag, format_notification, format_registered
 from .models import ParseResult, Reminder
 from .parser import parse
-from .scheduler import is_late, plan_after_fire
+from .scheduler import NAG_INTERVAL, NAG_MAX, is_late, plan_after_fire, plan_after_nag
 from .store import Store
 from .timeutil import now
 
@@ -109,9 +109,23 @@ class ReminderBot(discord.Client):
     async def tick(self) -> None:
         current = now()
         for rem in self.store.due(current):
-            await self.send_notification(rem, format_notification(rem, is_late(rem.next_at, current), current))
+            text = format_notification(rem, is_late(rem.next_at, current), current)
+            msg = await self.send_notification(rem.channel_id, rem.user_id, text)
             next_at, done = plan_after_fire(rem, current)
             self.store.update_after_fire(rem.id, next_at, done)
+            if msg:
+                self.store.start_nag(rem.id, rem.user_id, msg.channel.id, rem.content, msg.id,
+                                     current + NAG_INTERVAL)
+        for nag in self.store.due_nags(current):
+            msg = await self.send_notification(nag.channel_id, nag.user_id, format_nag(nag, NAG_MAX))
+            if msg:
+                self.store.add_nag_message(nag.id, msg.id)
+            next_at, sent = plan_after_nag(nag, current)
+            self.store.update_nag(nag.id, next_at, sent)
+
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        if payload.user_id == self.config.owner_id and self.store.ack_message(payload.message_id, payload.user_id):
+            log.info("リアクションで再通知を停止 (message=%s)", payload.message_id)
 
     @tick.before_loop
     async def _wait_ready(self) -> None:
@@ -121,19 +135,20 @@ class ReminderBot(discord.Client):
     async def _tick_error(self, error: BaseException) -> None:
         log.exception("通知ループでエラー", exc_info=error)
 
-    async def send_notification(self, rem: Reminder, text: str) -> None:
+    async def send_notification(self, channel_id: int, user_id: int, text: str) -> discord.Message | None:
+        """チャンネルに送り、失敗したらDMに送る。送れたメッセージを返す。"""
         mentions = discord.AllowedMentions(users=True, roles=False, everyone=False)
         try:
-            channel = self.get_channel(rem.channel_id) or await self.fetch_channel(rem.channel_id)
-            await channel.send(text, allowed_mentions=mentions)
-            return
+            channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+            return await channel.send(text, allowed_mentions=mentions)
         except discord.DiscordException:
-            log.exception("チャンネル %s への通知に失敗。DMで再送します", rem.channel_id)
+            log.exception("チャンネル %s への通知に失敗。DMで再送します", channel_id)
         try:
-            user = await self.fetch_user(rem.user_id)
-            await user.send(text, allowed_mentions=mentions)
+            user = await self.fetch_user(user_id)
+            return await user.send(text, allowed_mentions=mentions)
         except discord.DiscordException:
-            log.exception("リマインダー #%s の通知に失敗しました", rem.id)
+            log.exception("ユーザー %s への通知に失敗しました", user_id)
+            return None
 
 
 # ---------- ボタン ----------
