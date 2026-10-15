@@ -5,11 +5,10 @@ from reminder_bot.formatting import (
     describe_recurrence,
     fmt_dt,
     format_confirm,
-    format_nag,
     format_notification,
     format_registered,
 )
-from reminder_bot.models import DAILY, INTERVAL, MONTH_END, MONTHLY, WEEKDAYS, WEEKLY, Nag, Recurrence, Reminder
+from reminder_bot.models import DAILY, INTERVAL, MONTH_END, MONTHLY, WEEKDAYS, WEEKLY, Recurrence, Reminder
 from reminder_bot.parser import parse
 
 
@@ -49,13 +48,7 @@ def test_confirm_shows_reasons():
 def test_notification():
     rec = Recurrence(INTERVAL, interval=timedelta(hours=1), count=3)
     rem = Reminder(123, 1, "コンパス", jst(2026, 10, 11, 19, 0), rec, count_done=1)
-    assert format_notification(rem, late=False, now=NOW).startswith("<@123> ⏰ **コンパス** (2/3回目)\n-# ")
+    assert format_notification(rem, late=False, now=NOW) == "<@123> ⏰ **コンパス** (2/3回目)"
     single = Reminder(123, 1, "試合", jst(2026, 10, 11, 15, 0))
     assert "遅れて通知" in format_notification(single, late=True, now=NOW)
 
-
-def test_nag_message():
-    nag = Nag(1, 123, 2, "コンパス", jst(2026, 10, 11, 18, 10), sent=0)
-    assert format_nag(nag, 6).startswith("<@123> 🔁 **コンパス** (まだリアクションがありません 1/6)\n-# ")
-    last = Nag(1, 123, 2, "コンパス", jst(2026, 10, 11, 19, 0), sent=5)
-    assert "\n" not in format_nag(last, 6)

@@ -9,10 +9,11 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
-from .formatting import HELP_TEXT, format_confirm, format_list, format_nag, format_notification, format_registered
+from .formatting import HELP_TEXT, format_confirm, format_list, format_notification, format_registered
 from .models import ParseResult, Reminder
 from .parser import parse
-from .scheduler import NAG_INTERVAL, NAG_MAX, is_late, plan_after_fire, plan_after_nag
+from .scheduler import is_late, plan_after_fire
+from .snooze import SNOOZE_OPTIONS, label_for, snoozed_reminder
 from .store import Store
 from .timeutil import now
 
@@ -47,6 +48,7 @@ class ReminderBot(discord.Client):
 
     async def setup_hook(self) -> None:
         _register_commands(self)
+        self.add_view(SnoozeView(self))  # 再起動・更新後も古い通知のボタンを使えるようにする
         if self.config.guild_id:
             guild = discord.Object(id=self.config.guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -111,21 +113,10 @@ class ReminderBot(discord.Client):
         for rem in self.store.due(current):
             text = format_notification(rem, is_late(rem.next_at, current), current)
             msg = await self.send_notification(rem.channel_id, rem.user_id, text)
+            if msg:
+                self.store.record_notified(msg.id, rem.user_id, msg.channel.id, rem.content)
             next_at, done = plan_after_fire(rem, current)
             self.store.update_after_fire(rem.id, next_at, done)
-            if msg:
-                self.store.start_nag(rem.id, rem.user_id, msg.channel.id, rem.content, msg.id,
-                                     current + NAG_INTERVAL)
-        for nag in self.store.due_nags(current):
-            msg = await self.send_notification(nag.channel_id, nag.user_id, format_nag(nag, NAG_MAX))
-            if msg:
-                self.store.add_nag_message(nag.id, msg.id)
-            next_at, sent = plan_after_nag(nag, current)
-            self.store.update_nag(nag.id, next_at, sent)
-
-    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
-        if payload.user_id == self.config.owner_id and self.store.ack_message(payload.message_id, payload.user_id):
-            log.info("リアクションで再通知を停止 (message=%s)", payload.message_id)
 
     @tick.before_loop
     async def _wait_ready(self) -> None:
@@ -140,15 +131,66 @@ class ReminderBot(discord.Client):
         mentions = discord.AllowedMentions(users=True, roles=False, everyone=False)
         try:
             channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
-            return await channel.send(text, allowed_mentions=mentions)
+            return await channel.send(text, allowed_mentions=mentions, view=SnoozeView(self))
         except discord.DiscordException:
             log.exception("チャンネル %s への通知に失敗。DMで再送します", channel_id)
         try:
             user = await self.fetch_user(user_id)
-            return await user.send(text, allowed_mentions=mentions)
+            return await user.send(text, allowed_mentions=mentions, view=SnoozeView(self))
         except discord.DiscordException:
             log.exception("ユーザー %s への通知に失敗しました", user_id)
             return None
+
+
+# ---------- スヌーズ ----------
+
+class SnoozeView(discord.ui.View):
+    """通知メッセージに付く常設ボタン。内容は DB の notified から引くので再起動後も動く。"""
+
+    def __init__(self, bot: ReminderBot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.bot.is_owner(interaction.user):
+            return True
+        await interaction.response.send_message("このボタンは使えません", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="スヌーズ", style=discord.ButtonStyle.secondary, emoji="💤", custom_id="reminder:snooze")
+    async def snooze(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        info = self.bot.store.get_notified(interaction.message.id)
+        if info is None:
+            await interaction.response.send_message("この通知の情報が見つかりません", ephemeral=True)
+            return
+        user_id, channel_id, content = info
+        await interaction.response.send_message(
+            f"💤 **{content}** を何分後にもう一度通知しますか？",
+            view=SnoozePickView(self.bot, user_id, channel_id, content), ephemeral=True,
+        )
+
+
+class SnoozePickView(discord.ui.View):
+    """スヌーズ時間を選ぶセレクト(押した本人にだけ見える)。"""
+
+    def __init__(self, bot: ReminderBot, user_id: int, channel_id: int, content: str):
+        super().__init__(timeout=300)
+        self.bot, self.user_id, self.channel_id, self.content = bot, user_id, channel_id, content
+        select = discord.ui.Select(
+            placeholder="何分後にもう一度通知する？",
+            options=[discord.SelectOption(label=name, value=str(m)) for name, m in SNOOZE_OPTIONS],
+        )
+        select.callback = self.picked
+        self.add_item(select)
+
+    async def picked(self, interaction: discord.Interaction) -> None:
+        minutes = int(interaction.data["values"][0])
+        rem = snoozed_reminder(self.user_id, self.channel_id, self.content, minutes, now())
+        self.bot.store.add(rem)
+        self.stop()
+        await interaction.response.edit_message(
+            content=f"💤 {label_for(minutes)}({rem.next_at:%H:%M})にもう一度通知します: **{self.content}**", view=None
+        )
 
 
 # ---------- ボタン ----------

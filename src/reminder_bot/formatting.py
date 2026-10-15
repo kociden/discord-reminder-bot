@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from .models import DAILY, INTERVAL, MONTH_END, MONTHLY, WEEKDAYS, WEEKLY, Nag, ParseResult, Recurrence, Reminder
+from .models import DAILY, INTERVAL, MONTH_END, MONTHLY, WEEKDAYS, WEEKLY, ParseResult, Recurrence, Reminder
 from .recurrence import next_occurrence
 
 WD_JA = "月火水木金土日"
@@ -18,7 +18,7 @@ HELP_TEXT = """\
 @reminder 毎週月曜の朝ゴミ出し
 @reminder 21時まで30分おきに水飲む
 ```
-**完了**: 通知に何かリアクション。なければ10分おきに最大6回もう一度通知します
+**スヌーズ**: 通知の「💤 スヌーズ」ボタンで、選んだ時間後にもう一度通知します
 **管理**: `@reminder 一覧` / `@reminder 削除 3` / `/list` `/delete` `/alias`"""
 
 
@@ -105,13 +105,4 @@ def format_notification(rem: Reminder, late: bool, now: datetime) -> str:
         text += f" ({rem.count_done + 1}/{rem.recurrence.count}回目)"
     if late:
         text += f"\n(遅れて通知: 予定 {fmt_dt(rem.next_at, now)})"
-    return text + f"\n{NAG_HINT}"
-
-
-NAG_HINT = "-# 完了したら何かリアクションしてね(なければ10分後にもう一度)"
-
-
-def format_nag(nag: Nag, max_count: int) -> str:
-    n = nag.sent + 1
-    text = f"<@{nag.user_id}> 🔁 **{nag.content}** (まだリアクションがありません {n}/{max_count})"
-    return text if n >= max_count else text + f"\n{NAG_HINT}"
+    return text

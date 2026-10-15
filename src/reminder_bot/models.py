@@ -34,18 +34,6 @@ class ParseResult:
 
 
 @dataclass
-class Nag:
-    """リアクションが付くまでの再通知。"""
-    reminder_id: int
-    user_id: int
-    channel_id: int
-    content: str
-    next_at: datetime
-    sent: int = 0  # 送った再通知の回数
-    id: int | None = None
-
-
-@dataclass
 class Reminder:
     user_id: int
     channel_id: int
