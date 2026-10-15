@@ -48,7 +48,7 @@ class ReminderBot(discord.Client):
 
     async def setup_hook(self) -> None:
         _register_commands(self)
-        self.add_view(SnoozeView(self))  # 再起動・更新後も古い通知のボタンを使えるようにする
+        self.add_view(NotifyView(self))  # 再起動・更新後も古い通知のボタンを使えるようにする
         if self.config.guild_id:
             guild = discord.Object(id=self.config.guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -131,12 +131,12 @@ class ReminderBot(discord.Client):
         mentions = discord.AllowedMentions(users=True, roles=False, everyone=False)
         try:
             channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
-            return await channel.send(text, allowed_mentions=mentions, view=SnoozeView(self))
+            return await channel.send(text, allowed_mentions=mentions, view=NotifyView(self))
         except discord.DiscordException:
             log.exception("チャンネル %s への通知に失敗。DMで再送します", channel_id)
         try:
             user = await self.fetch_user(user_id)
-            return await user.send(text, allowed_mentions=mentions, view=SnoozeView(self))
+            return await user.send(text, allowed_mentions=mentions, view=NotifyView(self))
         except discord.DiscordException:
             log.exception("ユーザー %s への通知に失敗しました", user_id)
             return None
@@ -144,8 +144,9 @@ class ReminderBot(discord.Client):
 
 # ---------- スヌーズ ----------
 
-class SnoozeView(discord.ui.View):
-    """通知メッセージに付く常設ボタン。内容は DB の notified から引くので再起動後も動く。"""
+class NotifyView(discord.ui.View):
+    """通知メッセージに付く常設ボタン(左: 完了 / 右: スヌーズ)。
+    内容は DB の notified から引くので再起動後も動く。"""
 
     def __init__(self, bot: ReminderBot):
         super().__init__(timeout=None)
@@ -156,6 +157,16 @@ class SnoozeView(discord.ui.View):
             return True
         await interaction.response.send_message("このボタンは使えません", ephemeral=True)
         return False
+
+    @discord.ui.button(label="完了", style=discord.ButtonStyle.success, emoji="✅", custom_id="reminder:done")
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        info = self.bot.store.get_notified(interaction.message.id)
+        stamp = now().strftime("%H:%M")
+        if info:
+            text = f"✅ ~~{info[2]}~~ 完了 ({stamp})"
+        else:
+            text = f"{interaction.message.content}\n✅ 完了 ({stamp})"
+        await interaction.response.edit_message(content=text, view=None)
 
     @discord.ui.button(label="スヌーズ", style=discord.ButtonStyle.secondary, emoji="💤", custom_id="reminder:snooze")
     async def snooze(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
